@@ -18,6 +18,8 @@
 #include <Adafruit_NeoPixel.h>
 #include "USB.h"
 #include "USBMIDI.h"
+#include "esp_bt.h"
+#include "esp_gap_ble_api.h"
 
 // ==================== 配置 ====================
 // 发送端设备名 (与 main.c 中的 DEVICE_NAME 一致)
@@ -317,8 +319,22 @@ bool connectToServer() {
   }
   Serial.println("[BLE] Connected to server");
 
-  // 设置MTU以获得更好的性能
-  pClient->setMTU(128);  // 与 main.c 中的 esp_ble_gatt_set_local_mtu(128) 匹配
+  // 设置MTU
+  pClient->setMTU(128);
+
+  // 更新连接参数，减少 ACL 缓冲区压力
+  // min_int, max_int: 连接间隔 (单位: 1.25ms)
+  // latency: 从机延迟
+  // timeout: 超时时间 (单位: 10ms)
+  // 使用稍长的连接间隔来减少缓冲区压力
+  esp_ble_conn_update_params_t conn_params = {};
+  memcpy(conn_params.bda, myDevice->getAddress().getNative(), 6);
+  conn_params.min_int = 0x10;   // 20ms (0x10 * 1.25ms)
+  conn_params.max_int = 0x20;   // 40ms (0x20 * 1.25ms)
+  conn_params.latency = 0;
+  conn_params.timeout = 400;    // 4s
+  esp_ble_gap_update_conn_params(&conn_params);
+  Serial.println("[BLE] Connection parameters updated");
 
   // 获取MIDI服务
   BLERemoteService* pRemoteService = pClient->getService(BLEUUID(MIDI_SERVICE_UUID));
@@ -375,13 +391,20 @@ void setup() {
   Serial.println("  Target: " TARGET_DEVICE_NAME);
   Serial.println("========================================");
 
+  // 释放经典蓝牙内存，增加 BLE 可用内存
+  esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+  Serial.printf("[MEM] Free heap: %d bytes\n", ESP.getFreeHeap());
+
   // 初始化USB MIDI设备 (ESP32-S3 TinyUSB)
   MIDI.begin();
   USB.begin();
   Serial.println("[USB] MIDI Device initialized");
 
-  // 初始化BLE
-  BLEDevice::init("MIDI-Receiver");
+  // 初始化BLE (使用较短的设备名节省内存)
+  BLEDevice::init("MIDI-RX");
+
+  // 设置 BLE 发射功率
+  BLEDevice::setPower(ESP_PWR_LVL_P9);
 
   // 配置并开始扫描
   BLEScan* pBLEScan = BLEDevice::getScan();
