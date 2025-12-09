@@ -1,6 +1,6 @@
 /*
  * ESP32-S3 BLE MIDI Receiver (接收端)
- * 
+ *
  * Arduino IDE 设置:
  *   Tools → USB Mode → USB-OTG (TinyUSB)
  *   Tools → USB CDC On Boot → Disabled
@@ -88,16 +88,25 @@ void sendPolyPressure(uint8_t note, uint8_t pressure, uint8_t channel) {
 }
 
 // ==================== BLE MIDI 数据解析 ====================
+// 修复：使用新版 BLE 库的回调函数签名
 static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic,
                            uint8_t* pData, size_t length, bool isNotify) {
   if (length < 3) return;
 
+  Serial.printf("[MIDI] Received %d bytes: ", length);
+  for (size_t i = 0; i < length && i < 10; i++) {
+    Serial.printf("%02X ", pData[i]);
+  }
+  Serial.println();
+
   setLED(COLOR_CYAN);
 
   size_t idx = 0;
+  // 跳过 BLE MIDI 头部字节 (Header byte with timestamp high bits)
   if (pData[idx] & 0x80) idx++;
 
   while (idx < length) {
+    // 跳过时间戳字节 (Timestamp byte)
     if (idx < length && (pData[idx] & 0x80)) {
       idx++;
       if (idx >= length) break;
@@ -105,6 +114,7 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic,
 
     uint8_t status = pData[idx];
     if (!(status & 0x80)) {
+      // Running status: 使用上一个状态字节
       status = lastStatus;
     } else {
       lastStatus = status;
@@ -176,11 +186,14 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic,
 
 // ==================== BLE 回调 ====================
 class MyClientCallback : public BLEClientCallbacks {
-  void onConnect(BLEClient* pclient) {}
+  void onConnect(BLEClient* pclient) {
+    Serial.println("[BLE] onConnect callback");
+  }
   void onDisconnect(BLEClient* pclient) {
     connected = false;
     lastStatus = 0;
     setLED(COLOR_RED);
+    Serial.println("[BLE] Disconnected!");
   }
 };
 
@@ -189,8 +202,8 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
     String name = advertisedDevice.getName().c_str();
     if (name.length() > 0) Serial.printf("[SCAN] %s\n", name.c_str());
 
-    if (name == TARGET_DEVICE_NAME || 
-        (advertisedDevice.haveServiceUUID() && 
+    if (name == TARGET_DEVICE_NAME ||
+        (advertisedDevice.haveServiceUUID() &&
          advertisedDevice.isAdvertisingService(BLEUUID(MIDI_SERVICE_UUID)))) {
       Serial.println("[SCAN] Found target device!");
       BLEDevice::getScan()->stop();
@@ -210,29 +223,55 @@ bool connectToServer() {
   pClient->setClientCallbacks(new MyClientCallback());
 
   if (!pClient->connect(myDevice)) {
+    Serial.println("[BLE] Failed to connect!");
     setLED(COLOR_RED);
     return false;
   }
+  Serial.println("[BLE] Connected to server");
 
   // 设置较大MTU
   pClient->setMTU(256);
 
   BLERemoteService* pRemoteService = pClient->getService(BLEUUID(MIDI_SERVICE_UUID));
   if (pRemoteService == nullptr) {
+    Serial.println("[BLE] Failed to find MIDI service!");
     pClient->disconnect();
     setLED(COLOR_RED);
     return false;
   }
+  Serial.println("[BLE] Found MIDI service");
 
   pRemoteCharacteristic = pRemoteService->getCharacteristic(BLEUUID(MIDI_CHARACTERISTIC_UUID));
   if (pRemoteCharacteristic == nullptr) {
+    Serial.println("[BLE] Failed to find MIDI characteristic!");
     pClient->disconnect();
     setLED(COLOR_RED);
     return false;
   }
+  Serial.println("[BLE] Found MIDI characteristic");
 
+  // ============ 修复：正确启用 Notify ============
   if (pRemoteCharacteristic->canNotify()) {
-    pRemoteCharacteristic->registerForNotify(notifyCallback);
+    Serial.println("[BLE] Characteristic can notify, subscribing...");
+
+    // 方法1：使用 registerForNotify (兼容旧版库)
+    // 第二个参数 true 表示启用通知 (写入 CCCD)
+    pRemoteCharacteristic->registerForNotify(notifyCallback, true);
+
+    // 方法2 (备选)：如果上面不工作，手动写入 CCCD 描述符
+    // 获取 CCCD 描述符 (UUID: 0x2902) 并写入 0x0001 启用通知
+    BLERemoteDescriptor* pCCCD = pRemoteCharacteristic->getDescriptor(BLEUUID((uint16_t)0x2902));
+    if (pCCCD != nullptr) {
+      uint8_t notifyOn[] = {0x01, 0x00};  // 启用 Notify
+      pCCCD->writeValue(notifyOn, 2, true);
+      Serial.println("[BLE] CCCD written to enable notifications");
+    } else {
+      Serial.println("[BLE] Warning: CCCD descriptor not found!");
+    }
+
+    Serial.println("[BLE] Notifications enabled");
+  } else {
+    Serial.println("[BLE] Warning: Characteristic cannot notify!");
   }
 
   connected = true;
