@@ -47,6 +47,8 @@ static BLERemoteCharacteristic* pRemoteCharacteristic = nullptr;
 static BLEAdvertisedDevice* myDevice = nullptr;
 static BLEClient* pClient = nullptr;
 static uint8_t lastStatus = 0;
+static volatile unsigned long lastMidiActivity = 0;  // MIDI活动时间戳
+#define MIDI_LED_DURATION 150  // 青色持续时间(ms)
 
 // ==================== USB MIDI 发送函数 ====================
 void sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) {
@@ -99,6 +101,8 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic,
   }
   Serial.println();
 
+  // 记录MIDI活动时间，用于LED显示
+  lastMidiActivity = millis();
   setLED(COLOR_CYAN);
 
   size_t idx = 0;
@@ -180,8 +184,7 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic,
         break;
     }
   }
-
-  setLED(COLOR_GREEN);
+  // 不在这里切换回绿色，由 loop() 根据时间控制
 }
 
 // ==================== BLE 回调 ====================
@@ -340,7 +343,16 @@ void loop() {
     doScan = false;
   }
 
-  if (!connected && millis() - lastBlink > 300) {
+  // 已连接时的LED控制：有MIDI活动显示青色，否则绿色
+  if (connected) {
+    if (millis() - lastMidiActivity < MIDI_LED_DURATION) {
+      setLED(COLOR_CYAN);  // 有数据活动时显示青色
+    } else {
+      setLED(COLOR_GREEN);  // 空闲时显示绿色
+    }
+  }
+  // 未连接时闪烁蓝色
+  else if (millis() - lastBlink > 300) {
     ledState = !ledState;
     setLED(ledState ? COLOR_BLUE : COLOR_OFF);
     lastBlink = millis();
