@@ -385,7 +385,7 @@ static void ble_init(void)
         return;
     }
 
-    esp_ble_gatt_set_local_mtu(128);
+    esp_ble_gatt_set_local_mtu(256);
 
     ESP_LOGI(TAG, "BLE MIDI initialized");
 }
